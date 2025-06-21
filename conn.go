@@ -8,6 +8,7 @@ import (
 	"github.com/sandertv/go-raknet/internal/message"
 	"net"
 	"sync"
+	atomic2 "sync/atomic"
 	"time"
 )
 
@@ -80,6 +81,11 @@ type Conn struct {
 	readDeadline <-chan time.Time
 
 	lastActivity atomic.Value[time.Time]
+
+	packetLossPercentage atomic2.Value
+	packetTrackMu        sync.Mutex
+	sentPackets          map[time.Time]int
+	lostPackets          map[time.Time]int
 }
 
 // newConn constructs a new connection specifically dedicated to the address passed.
@@ -112,7 +118,10 @@ func newConnWithLimits(conn net.PacketConn, addr net.Addr, protocol byte, mtuSiz
 		ackBuf:         bytes.NewBuffer(make([]byte, 0, 256)),
 		nackBuf:        bytes.NewBuffer(make([]byte, 0, 256)),
 		lastActivity:   *atomic.NewValue(time.Now()),
+		sentPackets:    make(map[time.Time]int, 10),
+		lostPackets:    make(map[time.Time]int, 10),
 	}
+	c.packetLossPercentage.Store(float64(0))
 	go c.startTicking()
 	return c
 }
@@ -139,6 +148,9 @@ func (conn *Conn) startTicking() {
 			}
 			if i%3 == 0 {
 				conn.checkResend(t)
+			}
+			if i%10 == 0 {
+				conn.calculatePacketLoss()
 			}
 			if i%5 == 0 {
 				conn.mu.Lock()
@@ -237,6 +249,11 @@ func (conn *Conn) write(b []byte) (n int, err error) {
 		conn.splitID++
 	}
 	for splitIndex, content := range fragments {
+		conn.packetTrackMu.Lock()
+		now := time.Now().Truncate(time.Second)
+		conn.sentPackets[now]++
+		conn.packetTrackMu.Unlock()
+
 		sequenceNumber := conn.seq
 		conn.seq++
 		messageIndex := conn.messageIndex
@@ -754,6 +771,11 @@ func (conn *Conn) resend(sequenceNumbers []uint24) (err error) {
 			continue
 		}
 
+		conn.packetTrackMu.Lock()
+		now := time.Now().Truncate(time.Second)
+		conn.lostPackets[now]++
+		conn.packetTrackMu.Unlock()
+
 		// We first write a new datagram header using a new send sequence number that we find.
 		if err := conn.buf.WriteByte(bitFlagDatagram); err != nil {
 			return fmt.Errorf("error writing recovered datagram header: %v", err)
@@ -782,4 +804,46 @@ func (conn *Conn) requestConnection(id int64) error {
 	(&message.ConnectionRequest{ClientGUID: id, RequestTimestamp: time.Now().UnixMilli()}).Write(b)
 	_, err := conn.Write(b.Bytes())
 	return err
+}
+
+// calculatePacketLoss calculates the packet loss percentage over the last 10 seconds
+func (conn *Conn) calculatePacketLoss() {
+	conn.packetTrackMu.Lock()
+	defer conn.packetTrackMu.Unlock()
+
+	const window = 10 * time.Second
+	now := time.Now()
+	cutoff := now.Add(-window)
+
+	var totalSent, totalLost int
+
+	// Clean up old entries and count totals
+	for t, count := range conn.sentPackets {
+		if t.Before(cutoff) {
+			delete(conn.sentPackets, t)
+		} else {
+			totalSent += count
+		}
+	}
+
+	for t, count := range conn.lostPackets {
+		if t.Before(cutoff) {
+			delete(conn.lostPackets, t)
+		} else {
+			totalLost += count
+		}
+	}
+
+	// Calculate percentage as float64 for more precision
+	var percentage float64
+	if totalSent > 0 {
+		percentage = (float64(totalLost) / float64(totalSent)) * 100
+	}
+
+	conn.packetLossPercentage.Store(percentage)
+}
+
+// PacketLossPercentage returns the percentage of packets lost over the last 10 seconds as a float64
+func (conn *Conn) PacketLossPercentage() float64 {
+	return conn.packetLossPercentage.Load().(float64)
 }
