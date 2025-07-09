@@ -126,6 +126,11 @@ func newConnWithLimits(conn net.PacketConn, addr net.Addr, protocol byte, mtuSiz
 	return c
 }
 
+// Conn returns the underlying net.PacketConn.
+func (conn *Conn) Conn() net.PacketConn {
+	return conn.conn
+}
+
 // startTicking makes the connection start ticking, sending ACKs and pings to the other end where necessary
 // and checking if the connection should be timed out.
 func (conn *Conn) startTicking() {
