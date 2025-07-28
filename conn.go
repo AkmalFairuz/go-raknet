@@ -22,8 +22,8 @@ const (
 	// specific.
 	protocolVersion byte = 11
 
-	minMTUSize    = 576
-	maxMTUSize    = 1492
+	minMTUSize    = 400
+	maxMTUSize    = 1400
 	maxWindowSize = 2048
 )
 
@@ -132,6 +132,11 @@ func newConn(conn net.PacketConn, raddr net.Addr, mtu uint16, h connectionHandle
 // UDP headers (28 bytes).
 func (conn *Conn) effectiveMTU() uint16 {
 	return conn.mtu - 28
+}
+
+// Conn returns the underlying net.PacketConn.
+func (conn *Conn) Conn() net.PacketConn {
+	return conn.conn
 }
 
 // startTicking makes the connection start ticking, sending ACKs and pings to
