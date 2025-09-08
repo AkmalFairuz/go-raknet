@@ -23,7 +23,7 @@ const (
 	protocolVersion byte = 11
 
 	minMTUSize    = 400
-	maxMTUSize    = 1400
+	maxMTUSize    = 1200
 	maxWindowSize = 2048
 )
 
